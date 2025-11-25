@@ -1,0 +1,22 @@
+
+Realm version: 14.14.0 with Debug Enabled
+Platform: macOS Darwin 25.0.0 Darwin Kernel Version 25.0.0: Wed Sep 17 21:41:26 PDT 2025; root:xnu-12377.1.9~141/RELEASE_ARM64_T6041 arm64
+Encryption: Enabled at compile-time (always encrypt = no)
+
+REALM_MAX_BPNODE_SIZE = 1000
+REALM_MEMDEBUG = Disabled
+
+sizeof (size_t) * 8 = 64
+
+Compiler supported SSE (auto detect):       No
+This CPU supports SSE (auto detect):        None
+Compiler supported AVX (auto detect):       No
+This CPU supports AVX (AVX1) (auto detect): No
+
+UNITTEST_RANDOM_SEED:                       1163176643
+Test path prefix:                           /var/folders/g5/w0hpttcd33x6cm1ntz4k0tfw0000gn/T/realm_gZoM0m/
+Test resource path:                         /Users/mohitgarg/Documents/Emotionly/realm-core-hnsw/build.debug/test/realm-tests.app/Contents/Resources/
+
+Number of test threads: 14 (default)
+(Use UNITTEST_THREADS=1 to serialize testing) 
+

@@ -102,8 +102,9 @@ double HNSWIndex::compute_distance(const std::vector<double>& v1, const std::vec
             return cosine_distance(v1, v2);
         case DistanceMetric::DotProduct:
             return dot_product_distance(v1, v2);
+        default:
+            REALM_UNREACHABLE();
     }
-    return euclidean_distance(v1, v2);  // Default fallback
 }
 
 // ===================== Vector Extraction =====================

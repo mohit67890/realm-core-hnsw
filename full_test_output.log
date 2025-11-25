@@ -1,0 +1,72 @@
+
+Realm version: 14.14.0 with Debug Enabled
+Platform: macOS Darwin 25.0.0 Darwin Kernel Version 25.0.0: Wed Sep 17 21:41:26 PDT 2025; root:xnu-12377.1.9~141/RELEASE_ARM64_T6041 arm64
+Encryption: Enabled at compile-time (always encrypt = no)
+
+REALM_MAX_BPNODE_SIZE = 1000
+REALM_MEMDEBUG = Disabled
+
+sizeof (size_t) * 8 = 64
+
+Compiler supported SSE (auto detect):       No
+This CPU supports SSE (auto detect):        None
+Compiler supported AVX (auto detect):       No
+This CPU supports AVX (AVX1) (auto detect): No
+
+UNITTEST_RANDOM_SEED:                       105027731
+Test path prefix:                           /var/folders/g5/w0hpttcd33x6cm1ntz4k0tfw0000gn/T/realm_7oBzDF/
+Test resource path:                         /Users/mohitgarg/Documents/Emotionly/realm-core-hnsw/build.debug/test/realm-tests.app/Contents/Resources/
+
+Number of test threads: 14 (default)
+(Use UNITTEST_THREADS=1 to serialize testing) 
+
+   insertion time: 2391 ns/key
+   lookup time: 986 ns/key
+5000 BPlusTree - sequential
+   insertion time: 153 ns/row
+   lookup time   : 21 ns/row
+1000 values in dictionary
+    insertion: 1337 ns/val
+    lookup: 878 ns/val
+Normal: 21939 us
+Compacting: 21651 us
+100000 rows - random
+   insertion time: 2621 ns/key
+  compaction time: 2 ms
+   lookup obj    : 837 ns/key
+   lookup field  : 940 ns/key
+   lookup same   : 1364 ns/key
+   update time   : 1556 ns/key
+   erase time    : 58492 ns/key
+Establishing scenario seq ins/rnd erase 
+  compaction time: 3 ms
+Scenario has 100000 rows. Timing....
+   lookup obj    : 766 ns/key
+   lookup field  : 875 ns/key
+   lookup same   : 954 ns/key
+100000 rows - sequential
+   insertion time: 1578 ns/key
+  compaction time: 2 ms
+   lookup obj    : 302 ns/key
+   lookup field  : 404 ns/key
+   lookup same   : 489 ns/key
+   update time   : 997 ns/key
+   erase time    : 35830 ns/key
+1000 repetitions in Query_IntPerformance
+    time equal: 23949 ns/rep
+    time not_equal: 22437 ns/rep
+    time a == b: 64440 ns/rep
+    time sum: 24753 ns/rep
+1000 repetitions of find_all
+    time: 7447 ns/rep
+Realm - Success: All 1730 tests passed (117014657 checks).
+Realm - Test time: 1m30s
+
+Top 5 time usage:
+-------------------------------------
+HNSW_Scale_ManyVectors           1m4s
+HNSW_RealWorld_LargeScale_768D  9.52s
+Table_object_random             6.65s
+Shared_ManyReaders              6.41s
+Transactions_ReclaimFrozen      5.76s
+

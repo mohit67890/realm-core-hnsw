@@ -36,6 +36,7 @@
 #include <realm/cluster_tree.hpp>
 #include <realm/keys.hpp>
 #include <realm/global_key.hpp>
+#include <realm/hnsw_config.hpp>
 
 // Only set this to one when testing the code paths that exercise object ID
 // hash collisions. It artificially limits the "optimistic" local ID to use
@@ -245,16 +246,20 @@ public:
     void add_search_index(ColKey col_key, IndexType type = IndexType::General);
     void add_fulltext_index(ColKey col_key)
     {
-        add_search_index(col_key, IndexType::Fulltext);
+        add_search_index(col_key, IndexType::HNSW);
     }
     void add_hnsw_index(ColKey col_key)
     {
         add_search_index(col_key, IndexType::HNSW);
     }
+    void add_hnsw_index(ColKey col_key, const HNSWIndexConfig& config);
     void remove_search_index(ColKey col_key);
-    
+
     // Access index accessors (for advanced use like vector search)
-    std::vector<std::unique_ptr<SearchIndex>>& get_index_accessors() { return m_index_accessors; }
+    std::vector<std::unique_ptr<SearchIndex>>& get_index_accessors()
+    {
+        return m_index_accessors;
+    }
 
     void enumerate_string_column(ColKey col_key);
     bool is_enumerated(ColKey col_key) const noexcept;

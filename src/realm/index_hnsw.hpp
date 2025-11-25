@@ -22,6 +22,7 @@
 #include <realm/array.hpp>
 #include <realm/search_index.hpp>
 #include <realm/list.hpp>
+#include <realm/hnsw_config.hpp>
 #include <vector>
 #include <unordered_map>
 #include <queue>
@@ -47,41 +48,14 @@ namespace realm {
  * - Tunable parameters for accuracy/speed tradeoff
  */
 
-enum class DistanceMetric {
-    Euclidean,        // L2 distance
-    Cosine,           // Cosine similarity (1 - cosine_similarity)
-    DotProduct        // Negative dot product (for maximum inner product search)
-};
-
 class HNSWIndex : public SearchIndex {
 public:
-    // HNSW Configuration parameters
-    struct Config {
-        size_t M;                         // Number of bidirectional links created for each node (except layer 0)
-        size_t M0;                        // Number of links for layer 0 (typically 2*M)
-        size_t ef_construction;           // Size of dynamic candidate list during construction
-        size_t ef_search;                 // Size of dynamic candidate list during search
-        double ml;                        // Normalization factor for level assignment
-        DistanceMetric metric;
-        size_t vector_dimension;          // Dimension of vectors (detected from first insertion)
-        uint64_t random_seed;             // Seed for reproducible level assignment
-        
-        // Constructor with defaults
-        Config()
-            : M(16)
-            , M0(32)
-            , ef_construction(200)
-            , ef_search(50)
-            , ml(1.0 / std::log(2.0))
-            , metric(DistanceMetric::Euclidean)
-            , vector_dimension(0)
-            , random_seed(42)
-        {}
-    };
+    // HNSW Configuration parameters (using shared HNSWIndexConfig)
+    using Config = HNSWIndexConfig;
 
-    HNSWIndex(const ClusterColumn& target_column, Allocator& alloc, const Config& config = Config());
+    HNSWIndex(const ClusterColumn& target_column, Allocator& alloc, const Config& config);
     HNSWIndex(ref_type ref, ArrayParent* parent, size_t ndx_in_parent, 
-              const ClusterColumn& target_column, Allocator& alloc, const Config& config = Config());
+              const ClusterColumn& target_column, Allocator& alloc, const Config& config = Config(DistanceMetric::Euclidean));
     ~HNSWIndex() override;
 
     // SearchIndex interface implementation

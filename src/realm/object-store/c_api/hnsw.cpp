@@ -18,13 +18,15 @@
 
 #include "realm.hpp"
 #include <realm/index_hnsw.hpp>
+#include <realm/hnsw_config.hpp>
 #include <realm/table.hpp>
 #include <realm/group.hpp>
 
 namespace realm::c_api {
 
 // Convert C API distance metric to C++ enum
-static DistanceMetric to_cpp_metric(realm_hnsw_distance_metric_e metric) {
+static DistanceMetric to_cpp_metric(realm_hnsw_distance_metric_e metric)
+{
     switch (metric) {
         case RLM_HNSW_METRIC_EUCLIDEAN:
             return DistanceMetric::Euclidean;
@@ -33,7 +35,7 @@ static DistanceMetric to_cpp_metric(realm_hnsw_distance_metric_e metric) {
         case RLM_HNSW_METRIC_DOT_PRODUCT:
             return DistanceMetric::DotProduct;
         default:
-            return DistanceMetric::Euclidean;
+            throw std::invalid_argument("Invalid distance metric value");
     }
 }
 
@@ -41,14 +43,9 @@ static DistanceMetric to_cpp_metric(realm_hnsw_distance_metric_e metric) {
 
 extern "C" {
 
-RLM_API bool realm_hnsw_search_knn(const realm_t* realm, 
-                                   realm_class_key_t class_key,
-                                   realm_property_key_t property_key,
-                                   const double* query_vector,
-                                   size_t vector_size,
-                                   size_t k,
-                                   size_t ef_search,
-                                   realm_hnsw_search_result_t* out_results,
+RLM_API bool realm_hnsw_search_knn(const realm_t* realm, realm_class_key_t class_key,
+                                   realm_property_key_t property_key, const double* query_vector, size_t vector_size,
+                                   size_t k, size_t ef_search, realm_hnsw_search_result_t* out_results,
                                    size_t* out_num_results)
 {
     return realm::c_api::wrap_err([&]() {
@@ -59,7 +56,7 @@ RLM_API bool realm_hnsw_search_knn(const realm_t* realm,
         }
 
         realm::ColKey col_key(property_key);
-        
+
         // Get the search index for this column
         auto search_index = table->get_search_index(col_key);
         if (!search_index) {
@@ -93,14 +90,10 @@ RLM_API bool realm_hnsw_search_knn(const realm_t* realm,
     });
 }
 
-RLM_API bool realm_hnsw_search_radius(const realm_t* realm,
-                                      realm_class_key_t class_key,
-                                      realm_property_key_t property_key,
-                                      const double* query_vector,
-                                      size_t vector_size,
-                                      double max_distance,
-                                      realm_hnsw_search_result_t* out_results,
-                                      size_t max_results,
+RLM_API bool realm_hnsw_search_radius(const realm_t* realm, realm_class_key_t class_key,
+                                      realm_property_key_t property_key, const double* query_vector,
+                                      size_t vector_size, double max_distance,
+                                      realm_hnsw_search_result_t* out_results, size_t max_results,
                                       size_t* out_num_results)
 {
     return realm::c_api::wrap_err([&]() {
@@ -111,7 +104,7 @@ RLM_API bool realm_hnsw_search_radius(const realm_t* realm,
         }
 
         realm::ColKey col_key(property_key);
-        
+
         // Get the search index for this column
         auto search_index = table->get_search_index(col_key);
         if (!search_index) {
@@ -145,21 +138,10 @@ RLM_API bool realm_hnsw_search_radius(const realm_t* realm,
     });
 }
 
-RLM_API bool realm_hnsw_create_index(realm_t* realm,
-                                     realm_class_key_t class_key,
-                                     realm_property_key_t property_key,
-                                     size_t M,
-                                     size_t ef_construction,
-                                     realm_hnsw_distance_metric_e metric)
+RLM_API bool realm_hnsw_create_index(realm_t* realm, realm_class_key_t class_key, realm_property_key_t property_key,
+                                     size_t M, size_t ef_construction, realm_hnsw_distance_metric_e metric)
 {
     return realm::c_api::wrap_err([&]() {
-        // Note: M, ef_construction, and metric parameters are currently unused.
-        // The HNSW index uses default configuration from HNSWIndex::Config.
-        // TODO: Extend Table API to accept custom HNSW config if needed.
-        (void)M;
-        (void)ef_construction;
-        (void)metric;
-        
         auto& shared_realm = *realm;
         auto table = (*shared_realm).read_group().get_table(realm::TableKey(class_key));
         if (!table) {
@@ -167,15 +149,33 @@ RLM_API bool realm_hnsw_create_index(realm_t* realm,
         }
 
         realm::ColKey col_key(property_key);
-        table->add_search_index(col_key, realm::IndexType::HNSW);
+        
+        // Check if index already exists
+        if (table->has_search_index(col_key)) {
+            if (table->search_index_type(col_key) == realm::IndexType::HNSW) {
+                return true;  // Already exists
+            }
+            throw std::runtime_error("Different index type already exists on this property");
+        }
+
+        // Validate column type
+        if (!col_key.is_list() || col_key.get_type() != realm::col_type_Double) {
+            throw std::runtime_error("HNSW index only supported for List<Double> columns");
+        }
+
+        // Create HNSWIndexConfig with user-specified parameters
+        realm::HNSWIndexConfig config(realm::c_api::to_cpp_metric(metric));
+        config.M = M;
+        config.ef_construction = ef_construction;
+
+        // Create HNSW index with the specified config
+        table->add_hnsw_index(col_key, config);
 
         return true;
     });
 }
 
-RLM_API bool realm_hnsw_remove_index(realm_t* realm,
-                                     realm_class_key_t class_key,
-                                     realm_property_key_t property_key)
+RLM_API bool realm_hnsw_remove_index(realm_t* realm, realm_class_key_t class_key, realm_property_key_t property_key)
 {
     return realm::c_api::wrap_err([&]() {
         auto& shared_realm = *realm;
@@ -191,10 +191,8 @@ RLM_API bool realm_hnsw_remove_index(realm_t* realm,
     });
 }
 
-RLM_API bool realm_hnsw_has_index(const realm_t* realm,
-                                  realm_class_key_t class_key,
-                                  realm_property_key_t property_key,
-                                  bool* out_has_index)
+RLM_API bool realm_hnsw_has_index(const realm_t* realm, realm_class_key_t class_key,
+                                  realm_property_key_t property_key, bool* out_has_index)
 {
     return realm::c_api::wrap_err([&]() {
         auto& shared_realm = *realm;
@@ -205,7 +203,7 @@ RLM_API bool realm_hnsw_has_index(const realm_t* realm,
 
         realm::ColKey col_key(property_key);
         auto search_index = table->get_search_index(col_key);
-        
+
         bool has_hnsw = false;
         if (search_index) {
             auto* hnsw_index = dynamic_cast<realm::HNSWIndex*>(search_index);
@@ -220,11 +218,8 @@ RLM_API bool realm_hnsw_has_index(const realm_t* realm,
     });
 }
 
-RLM_API bool realm_hnsw_get_stats(const realm_t* realm,
-                                  realm_class_key_t class_key,
-                                  realm_property_key_t property_key,
-                                  size_t* out_num_vectors,
-                                  int* out_max_layer)
+RLM_API bool realm_hnsw_get_stats(const realm_t* realm, realm_class_key_t class_key,
+                                  realm_property_key_t property_key, size_t* out_num_vectors, int* out_max_layer)
 {
     return realm::c_api::wrap_err([&]() {
         auto& shared_realm = *realm;

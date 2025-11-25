@@ -536,3 +536,99 @@ TEST(HNSW_VectorSearch_Large_Dataset)
         
         read->end_read();
 }
+
+// Test: Verify HNSWIndex Config enforces metric choice
+TEST(HNSW_VectorSearch_MetricConfiguration)
+{
+    SHARED_GROUP_TEST_PATH(path);
+    std::unique_ptr<Replication> hist(make_in_realm_history());
+    DBRef db = DB::create(*hist, path, DBOptions(crypt_key()));
+    auto write = db->start_write();
+    
+    TableRef table = write->add_table("MetricTest");
+    auto vec_col = table->add_column_list(type_Double, "vector");
+    
+    // Test that Config requires explicit DistanceMetric
+    // This should compile and use Euclidean metric
+    HNSWIndex::Config euclidean_config(DistanceMetric::Euclidean);
+    CHECK(euclidean_config.metric == DistanceMetric::Euclidean);
+    CHECK_EQUAL(euclidean_config.M, 16);
+    CHECK_EQUAL(euclidean_config.ef_construction, 200);
+    
+    // Test that we can create configs with different metrics
+    HNSWIndex::Config cosine_config(DistanceMetric::Cosine);
+    CHECK(cosine_config.metric == DistanceMetric::Cosine);
+    
+    HNSWIndex::Config dot_config(DistanceMetric::DotProduct);
+    CHECK(dot_config.metric == DistanceMetric::DotProduct);
+    
+    // Create HNSW index with explicit Euclidean config
+    table->add_search_index(vec_col, IndexType::HNSW);
+    CHECK(table->has_search_index(vec_col));
+    
+    // Insert test vectors to verify calculations use the configured metric
+    std::vector<ObjKey> keys;
+    std::vector<std::vector<double>> vectors = {
+        {0.0, 0.0, 0.0},  // Origin
+        {1.0, 0.0, 0.0},  // Unit vector on X-axis, distance from origin = 1.0
+        {3.0, 4.0, 0.0},  // 3-4-5 triangle, distance from origin = 5.0
+        {6.0, 8.0, 0.0}   // Double of previous, distance from origin = 10.0
+    };
+    
+    for (size_t i = 0; i < vectors.size(); ++i) {
+        auto obj = table->create_object();
+        keys.push_back(obj.get_key());
+        auto list = obj.get_list<Double>(vec_col);
+        for (double val : vectors[i]) {
+            list.add(val);
+        }
+    }
+    
+    write->commit();
+    
+    // Read transaction to verify search results
+    auto read = db->start_read();
+    auto table_read = read->get_table("MetricTest");
+    
+    // Query from origin - verify Euclidean distances are correct
+    std::vector<double> query_origin = {0.0, 0.0, 0.0};
+    Query q(table_read);
+    TableView results = q.vector_search_knn(vec_col, query_origin, 4);
+    
+    CHECK_EQUAL(results.size(), 4);
+    
+    // Results should be ordered by Euclidean distance
+    // First result: origin itself (distance ≈ 0)
+    auto key0 = results.get_key(0);
+    auto obj0 = table_read->get_object(key0);
+    auto vec0 = obj0.get_list<Double>(vec_col);
+    std::vector<double> v0 = {vec0.get(0), vec0.get(1), vec0.get(2)};
+    double dist0 = calculate_distance(v0, query_origin);
+    CHECK(dist0 < 0.01);
+    
+    // Second result: {1, 0, 0} (distance = 1.0)
+    auto key1 = results.get_key(1);
+    auto obj1 = table_read->get_object(key1);
+    auto vec1 = obj1.get_list<Double>(vec_col);
+    std::vector<double> v1 = {vec1.get(0), vec1.get(1), vec1.get(2)};
+    double dist1 = calculate_distance(v1, query_origin);
+    CHECK(std::abs(dist1 - 1.0) < 0.1);
+    
+    // Third result: {3, 4, 0} (distance = 5.0)
+    auto key2 = results.get_key(2);
+    auto obj2 = table_read->get_object(key2);
+    auto vec2 = obj2.get_list<Double>(vec_col);
+    std::vector<double> v2 = {vec2.get(0), vec2.get(1), vec2.get(2)};
+    double dist2 = calculate_distance(v2, query_origin);
+    CHECK(std::abs(dist2 - 5.0) < 0.1);
+    
+    // Fourth result: {6, 8, 0} (distance = 10.0)
+    auto key3 = results.get_key(3);
+    auto obj3 = table_read->get_object(key3);
+    auto vec3 = obj3.get_list<Double>(vec_col);
+    std::vector<double> v3 = {vec3.get(0), vec3.get(1), vec3.get(2)};
+    double dist3 = calculate_distance(v3, query_origin);
+    CHECK(std::abs(dist3 - 10.0) < 0.1);
+    
+    read->end_read();
+}

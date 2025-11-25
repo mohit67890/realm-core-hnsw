@@ -899,18 +899,20 @@ void Table::do_add_search_index(ColKey col_key, IndexType type)
     // Handle HNSW index for List<Double>
     if (type == IndexType::HNSW) {
         if (!col_key.is_list() || col_key.get_type() != col_type_Double) {
-            throw IllegalOperation(util::format("HNSW index only supported for List<Double> columns: %1", 
-                                               get_column_name(col_key)));
+            throw IllegalOperation(
+                util::format("HNSW index only supported for List<Double> columns: %1", get_column_name(col_key)));
         }
-        
+
         // m_index_accessors always has the same number of pointers as the number of columns. Columns without search
         // index have 0-entries.
         REALM_ASSERT(m_index_accessors.size() == m_leaf_ndx2colkey.size());
         REALM_ASSERT(m_index_accessors[column_ndx] == nullptr);
 
-        // Create the HNSW index
+        // Create the HNSW index with default config (Euclidean metric)
+        // Note: This path is used by add_hnsw_index() without explicit metric
+        HNSWIndex::Config default_config(DistanceMetric::Euclidean);
         m_index_accessors[column_ndx] =
-            std::make_unique<HNSWIndex>(ClusterColumn(&m_clusters, col_key, type), get_alloc()); // Throws
+            std::make_unique<HNSWIndex>(ClusterColumn(&m_clusters, col_key, type), get_alloc(), default_config); // Throws
         SearchIndex* index = m_index_accessors[column_ndx].get();
         // Insert ref to index
         index->set_parent(&m_index_refs, column_ndx);
@@ -1002,6 +1004,43 @@ void Table::add_search_index(ColKey col_key, IndexType type)
     // Update spec
     attr.set(type == IndexType::Fulltext ? col_attr_FullText_Indexed : col_attr_Indexed);
     m_spec.set_column_attr(spec_ndx, attr); // Throws
+}
+
+void Table::add_hnsw_index(ColKey col_key, const HNSWIndexConfig& config)
+{
+    check_column(col_key);
+    auto column_ndx = col_key.get_index();
+    auto type = IndexType::HNSW;
+
+    // Validate column is List<double>
+    if (!col_key.is_list() || col_key.get_type() != col_type_Double) {
+        throw IllegalOperation(util::format("HNSW index only supported for List<Double> properties: %1", get_column_name(col_key)));
+    }
+
+    // Early-out if already has search index
+    if (m_index_accessors[column_ndx.val] != nullptr) {
+        if (search_index_type(col_key) == type)
+            return;
+        throw IllegalOperation(
+            util::format("Column '%1' already has a search index", get_column_name(col_key)));
+    }
+
+    // Create the HNSW index with user-specified config
+    m_index_accessors[column_ndx.val] =
+        std::make_unique<HNSWIndex>(ClusterColumn(&m_clusters, col_key, type), get_alloc(), config);
+    SearchIndex* index = m_index_accessors[column_ndx.val].get();
+    
+    // Insert ref to index
+    index->set_parent(&m_index_refs, column_ndx.val);
+    m_index_refs.set(column_ndx.val, index->get_ref());
+
+    populate_search_index(col_key);
+
+    // Update spec
+    auto spec_ndx = colkey2spec_ndx(col_key);
+    auto attr = m_spec.get_column_attr(spec_ndx);
+    attr.set(col_attr_Indexed);
+    m_spec.set_column_attr(spec_ndx, attr);
 }
 
 void Table::remove_search_index(ColKey col_key)
@@ -1330,16 +1369,16 @@ IndexType Table::search_index_type(ColKey col_key) const noexcept
     if (m_index_accessors[col_key.get_index().val].get()) {
         auto attr = m_spec.get_column_attr(m_leaf_ndx2spec_ndx[col_key.get_index().val]);
         bool fulltext = attr.test(col_attr_FullText_Indexed);
-        
+
         if (fulltext) {
             return IndexType::Fulltext;
         }
-        
+
         // Check if it's an HNSW index by type checking
         if (dynamic_cast<HNSWIndex*>(m_index_accessors[col_key.get_index().val].get())) {
             return IndexType::HNSW;
         }
-        
+
         return IndexType::General;
     }
     return IndexType::None;
@@ -2148,7 +2187,7 @@ void Table::flush_for_commit()
 {
     // Update all HNSW indexes with any objects that were created/modified
     update_all_hnsw_indexes();
-    
+
     if (m_top.is_attached() && m_top.size() >= top_position_for_version) {
         if (!m_top.is_read_only()) {
             ++m_in_file_version_at_transaction_boundary;
@@ -2165,7 +2204,7 @@ void Table::update_all_hnsw_indexes()
         if (auto* hnsw = dynamic_cast<HNSWIndex*>(m_index_accessors[col_ndx].get())) {
             // Clear the index first to avoid duplicates
             hnsw->clear();
-            
+
             // Re-index all objects
             for (auto it = begin(); it != end(); ++it) {
                 hnsw->insert(it->get_key(), Mixed{});
