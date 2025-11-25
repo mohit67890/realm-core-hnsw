@@ -4,6 +4,7 @@ set(REALM_FFI_SOURCES
     config.cpp
     dictionary.cpp
     error.cpp
+    hnsw.cpp
     logging.cpp
     notifications.cpp
     object.cpp

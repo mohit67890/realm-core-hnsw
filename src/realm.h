@@ -4513,4 +4513,143 @@ RLM_API bool realm_sync_socket_websocket_message(realm_websocket_observer_t* rea
 RLM_API bool realm_sync_socket_websocket_closed(realm_websocket_observer_t* realm_websocket_observer, bool was_clean,
                                                 realm_web_socket_errno_e code, const char* reason);
 
+/* ========================================================================== */
+/* HNSW Vector Search API                                                     */
+/* ========================================================================== */
+
+/**
+ * Distance metric types for HNSW vector search.
+ */
+typedef enum realm_hnsw_distance_metric {
+    RLM_HNSW_METRIC_EUCLIDEAN = 0,    // L2 distance
+    RLM_HNSW_METRIC_COSINE = 1,       // Cosine similarity (1 - cosine_similarity)
+    RLM_HNSW_METRIC_DOT_PRODUCT = 2,  // Negative dot product (for maximum inner product search)
+} realm_hnsw_distance_metric_e;
+
+/**
+ * Result structure for vector search operations.
+ * Contains an object key and its distance to the query vector.
+ */
+typedef struct realm_hnsw_search_result {
+    realm_object_key_t object_key;
+    double distance;
+} realm_hnsw_search_result_t;
+
+/**
+ * Search for k-nearest neighbors in a vector property.
+ * 
+ * This function performs an approximate nearest neighbor search using the HNSW index
+ * on a List<double> property. The property must have an HNSW index created on it.
+ * 
+ * @param realm The realm instance.
+ * @param class_key The class containing the vector property.
+ * @param property_key The property key of the List<double> vector property.
+ * @param query_vector Pointer to the query vector data.
+ * @param vector_size The dimension of the query vector.
+ * @param k Number of nearest neighbors to find.
+ * @param ef_search Size of dynamic candidate list (0 to use config default).
+ * @param out_results Output array to store the results. Must be pre-allocated with at least k elements.
+ * @param out_num_results Pointer to store the actual number of results returned (may be less than k).
+ * @return true if successful, false if an error occurred.
+ */
+RLM_API bool realm_hnsw_search_knn(const realm_t* realm, 
+                                   realm_class_key_t class_key,
+                                   realm_property_key_t property_key,
+                                   const double* query_vector,
+                                   size_t vector_size,
+                                   size_t k,
+                                   size_t ef_search,
+                                   realm_hnsw_search_result_t* out_results,
+                                   size_t* out_num_results);
+
+/**
+ * Search for all vectors within a distance threshold.
+ * 
+ * This function performs a radius search using the HNSW index on a List<double> property.
+ * Returns all vectors within the specified maximum distance from the query vector.
+ * 
+ * @param realm The realm instance.
+ * @param class_key The class containing the vector property.
+ * @param property_key The property key of the List<double> vector property.
+ * @param query_vector Pointer to the query vector data.
+ * @param vector_size The dimension of the query vector.
+ * @param max_distance Maximum distance threshold.
+ * @param out_results Output array to store the results. Caller is responsible for allocation.
+ * @param max_results Maximum number of results to return.
+ * @param out_num_results Pointer to store the actual number of results returned.
+ * @return true if successful, false if an error occurred.
+ */
+RLM_API bool realm_hnsw_search_radius(const realm_t* realm,
+                                      realm_class_key_t class_key,
+                                      realm_property_key_t property_key,
+                                      const double* query_vector,
+                                      size_t vector_size,
+                                      double max_distance,
+                                      realm_hnsw_search_result_t* out_results,
+                                      size_t max_results,
+                                      size_t* out_num_results);
+
+/**
+ * Create an HNSW index on a List<double> property.
+ * 
+ * This must be called before performing vector searches on a property.
+ * The property must be of type List<double>.
+ * 
+ * @param realm The realm instance (must be in a write transaction).
+ * @param class_key The class containing the vector property.
+ * @param property_key The property key of the List<double> vector property.
+ * @param M Number of bidirectional links created for each node (except layer 0). Default: 16.
+ * @param ef_construction Size of dynamic candidate list during construction. Default: 200.
+ * @param metric Distance metric to use.
+ * @return true if successful, false if an error occurred.
+ */
+RLM_API bool realm_hnsw_create_index(realm_t* realm,
+                                     realm_class_key_t class_key,
+                                     realm_property_key_t property_key,
+                                     size_t M,
+                                     size_t ef_construction,
+                                     realm_hnsw_distance_metric_e metric);
+
+/**
+ * Remove an HNSW index from a property.
+ * 
+ * @param realm The realm instance (must be in a write transaction).
+ * @param class_key The class containing the vector property.
+ * @param property_key The property key with the HNSW index.
+ * @return true if successful, false if an error occurred.
+ */
+RLM_API bool realm_hnsw_remove_index(realm_t* realm,
+                                     realm_class_key_t class_key,
+                                     realm_property_key_t property_key);
+
+/**
+ * Check if a property has an HNSW index.
+ * 
+ * @param realm The realm instance.
+ * @param class_key The class containing the property.
+ * @param property_key The property key to check.
+ * @param out_has_index Pointer to store the result (true if index exists).
+ * @return true if successful, false if an error occurred.
+ */
+RLM_API bool realm_hnsw_has_index(const realm_t* realm,
+                                  realm_class_key_t class_key,
+                                  realm_property_key_t property_key,
+                                  bool* out_has_index);
+
+/**
+ * Get statistics about an HNSW index.
+ * 
+ * @param realm The realm instance.
+ * @param class_key The class containing the vector property.
+ * @param property_key The property key with the HNSW index.
+ * @param out_num_vectors Pointer to store the number of vectors in the index.
+ * @param out_max_layer Pointer to store the maximum layer in the index.
+ * @return true if successful, false if an error occurred.
+ */
+RLM_API bool realm_hnsw_get_stats(const realm_t* realm,
+                                  realm_class_key_t class_key,
+                                  realm_property_key_t property_key,
+                                  size_t* out_num_vectors,
+                                  int* out_max_layer);
+
 #endif // REALM_H
