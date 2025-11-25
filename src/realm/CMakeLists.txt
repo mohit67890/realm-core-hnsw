@@ -41,6 +41,7 @@ set(REALM_SOURCES
     impl/simulated_failure.cpp
     impl/transact_log.cpp
     index_string.cpp
+    index_hnsw.cpp
     link_translator.cpp
     list.cpp
     node.cpp
@@ -163,6 +164,7 @@ set(REALM_INSTALL_HEADERS
     handover_defs.hpp
     history.hpp
     index_string.hpp
+    index_hnsw.hpp
     keys.hpp
     list.hpp
     mixed.hpp

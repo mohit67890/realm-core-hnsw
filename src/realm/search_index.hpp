@@ -70,6 +70,10 @@ public:
     Mixed get_value(ObjKey key) const;
     Lst<String> get_list(ObjKey key) const;
     std::vector<ObjKey> get_all_keys() const;
+    
+    const ClusterTree* get_cluster_tree() const {
+        return m_cluster_tree;
+    }
 
 private:
     const ClusterTree* m_cluster_tree;

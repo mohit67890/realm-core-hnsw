@@ -58,6 +58,7 @@ class LinkChain;
 class SearchIndex;
 class SortDescriptor;
 class StringIndex;
+class HNSWIndex;
 class Subexpr;
 template <class>
 class SubQuery;
@@ -239,14 +240,21 @@ public:
     IndexType search_index_type(ColKey col_key) const noexcept;
     bool has_search_index(ColKey col_key) const noexcept
     {
-        return search_index_type(col_key) == IndexType::General;
+        return search_index_type(col_key) != IndexType::None;
     }
     void add_search_index(ColKey col_key, IndexType type = IndexType::General);
     void add_fulltext_index(ColKey col_key)
     {
         add_search_index(col_key, IndexType::Fulltext);
     }
+    void add_hnsw_index(ColKey col_key)
+    {
+        add_search_index(col_key, IndexType::HNSW);
+    }
     void remove_search_index(ColKey col_key);
+    
+    // Access index accessors (for advanced use like vector search)
+    std::vector<std::unique_ptr<SearchIndex>>& get_index_accessors() { return m_index_accessors; }
 
     void enumerate_string_column(ColKey col_key);
     bool is_enumerated(ColKey col_key) const noexcept;
@@ -439,6 +447,7 @@ public:
     // Will return pointer to search index accessor. Will return nullptr if no index
     SearchIndex* get_search_index(ColKey col) const noexcept;
     StringIndex* get_string_index(ColKey col) const noexcept;
+    HNSWIndex* get_hnsw_index(ColKey col) const noexcept;
 
     template <class T>
     ObjKey find_first(ColKey col_key, T value) const;
@@ -844,6 +853,7 @@ private:
     void refresh_index_accessors();
     void refresh_content_version();
     void flush_for_commit();
+    void update_all_hnsw_indexes();
 
     bool is_cross_table_link_target() const noexcept;
 

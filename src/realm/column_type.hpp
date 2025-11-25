@@ -133,7 +133,7 @@ static_assert(!col_type_OldStringEnum.is_valid());
 static_assert(!col_type_OldTable.is_valid());
 static_assert(!col_type_OldDateTime.is_valid());
 
-enum class IndexType { None, General, Fulltext };
+enum class IndexType { None, General, Fulltext, HNSW };
 
 inline std::ostream& operator<<(std::ostream& ostr, IndexType type)
 {
@@ -146,6 +146,9 @@ inline std::ostream& operator<<(std::ostream& ostr, IndexType type)
             break;
         case IndexType::Fulltext:
             ostr << "fulltext index";
+            break;
+        case IndexType::HNSW:
+            ostr << "HNSW vector index";
             break;
     }
     return ostr;

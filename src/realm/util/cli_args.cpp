@@ -68,7 +68,7 @@ std::string CliArgument::as<std::string>() const
 template <>
 int64_t CliArgument::as<int64_t>() const
 {
-    int64_t val = std::strtol(m_value.data(), nullptr, 10);
+    int64_t val = strtol(m_value.data(), nullptr, 10);
     if (errno == ERANGE) {
         throw CliParseException("parsing integer argument produced an integer out-of-range");
     }

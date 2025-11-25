@@ -277,6 +277,28 @@ public:
     // Deletion
     size_t remove() const;
 
+    // Vector similarity search (for List<double> columns with HNSW index)
+    /**
+     * Search for k nearest neighbors using vector similarity
+     * @param column_key Column containing List<double> vectors (must have HNSW index)
+     * @param query_vector The vector to search for similar items
+     * @param k Number of nearest neighbors to return
+     * @param ef_search Quality parameter (higher = better accuracy, slower search). 0 = use index default
+     * @return Results ordered by similarity (most similar first)
+     */
+    TableView vector_search_knn(ColKey column_key, const std::vector<double>& query_vector, 
+                                 size_t k, size_t ef_search = 0) const;
+    
+    /**
+     * Search for all vectors within a distance threshold
+     * @param column_key Column containing List<double> vectors (must have HNSW index)
+     * @param query_vector The vector to search for similar items
+     * @param max_distance Maximum distance threshold
+     * @return Results within threshold, ordered by similarity
+     */
+    TableView vector_search_radius(ColKey column_key, const std::vector<double>& query_vector,
+                                    double max_distance) const;
+
 #if REALM_MULTITHREAD_QUERY
     // Multi-threading
     TableView find_all_multi(size_t start = 0, size_t end = size_t(-1));

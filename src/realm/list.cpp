@@ -29,6 +29,7 @@
 #include "realm/array_fixed_bytes.hpp"
 #include "realm/array_typed_link.hpp"
 #include "realm/array_mixed.hpp"
+#include "realm/index_hnsw.hpp"
 #include "realm/column_type_traits.hpp"
 #include "realm/object_id.hpp"
 #include "realm/table.hpp"

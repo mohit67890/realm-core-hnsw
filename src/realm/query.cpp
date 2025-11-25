@@ -29,6 +29,7 @@
 #include <realm/set.hpp>
 
 #include <algorithm>
+#include <unordered_set>
 
 using namespace realm;
 
@@ -2057,4 +2058,175 @@ QueryGroup& QueryGroup::operator=(const QueryGroup& other)
         m_pending_not = other.m_pending_not;
     }
     return *this;
+}
+
+// ===================== Vector Similarity Search =====================
+
+#include <realm/index_hnsw.hpp>
+
+TableView Query::vector_search_knn(ColKey column_key, const std::vector<double>& query_vector,
+                                    size_t k, size_t ef_search) const
+{
+    if (!m_table) {
+        throw LogicError(ErrorCodes::InvalidQuery, "Query has no associated table");
+    }
+    
+    // Check that column exists and is of correct type
+    if (!m_table->valid_column(column_key)) {
+        throw InvalidColumnKey("Invalid column key");
+    }
+    
+    if (!column_key.is_list()) {
+        throw InvalidArgument(ErrorCodes::TypeMismatch, "Vector search requires a List column");
+    }
+    
+    ColumnType col_type = column_key.get_type();
+    if (col_type != col_type_Double) {
+        std::string error_msg = "Vector search requires List<Double> column, got: ";
+        error_msg += get_data_type_name(DataType(col_type));
+        throw InvalidArgument(ErrorCodes::TypeMismatch, error_msg);
+    }
+    
+    // Check if column has HNSW index
+    if (!m_table->has_search_index(column_key)) {
+        throw LogicError(ErrorCodes::InvalidQuery, 
+            "Vector search requires an HNSW index on the column. Call Table::add_hnsw_index() first.");
+    }
+    
+    // Get the HNSW index
+    auto& index_accessors = m_table->get_index_accessors();
+    size_t spec_ndx = m_table->leaf_ndx2spec_ndx(column_key.get_index());
+    
+    if (spec_ndx >= index_accessors.size() || !index_accessors[spec_ndx]) {
+        throw LogicError(ErrorCodes::InvalidQuery, "HNSW index not found for column");
+    }
+    
+    // Try to cast to HNSW index
+    HNSWIndex* hnsw_index = dynamic_cast<HNSWIndex*>(index_accessors[spec_ndx].get());
+    if (!hnsw_index) {
+        throw LogicError(ErrorCodes::InvalidQuery, 
+            "Column has a search index but it is not an HNSW index. Use add_hnsw_index() instead of add_search_index().");
+    }
+    
+    // Initialize query state before checking conditions
+    init();
+    
+    // If we have filter conditions, we need to fetch more results from HNSW
+    // because some will be filtered out
+    size_t fetch_count = k;
+    if (has_conditions()) {
+        // Request significantly more results to account for filtering
+        // Use 10x multiplier or table size, whichever is smaller
+        fetch_count = std::min(k * 10, m_table->size());
+        // Always fetch at least k results even if table is small
+        fetch_count = std::max(fetch_count, k);
+    }
+    
+    // Perform the HNSW search
+    auto results = hnsw_index->search_knn(query_vector, fetch_count, ef_search);
+    
+    // Filter results through the existing query if there are any filter conditions
+    std::vector<std::pair<ObjKey, double>> filtered_results;
+    if (has_conditions()) {
+        // Apply query filters to the HNSW results
+        for (const auto& result : results) {
+            Obj obj = m_table->get_object(result.first);
+            if (eval_object(obj)) {
+                filtered_results.push_back(result);
+                // Stop once we have k filtered results
+                if (filtered_results.size() >= k) {
+                    break;
+                }
+            }
+        }
+    } else {
+        filtered_results = std::move(results);
+    }
+    
+    // Create a TableView from the filtered results
+    Query result_query(m_table);
+    TableView tv(result_query, filtered_results.size());
+    
+    // Add each filtered result ObjKey to the TableView
+    for (const auto& result : filtered_results) {
+        tv.m_key_values.add(result.first);
+    }
+    
+    return tv;
+}
+
+TableView Query::vector_search_radius(ColKey column_key, const std::vector<double>& query_vector,
+                                       double max_distance) const
+{
+    if (!m_table) {
+        throw LogicError(ErrorCodes::InvalidQuery, "Query has no associated table");
+    }
+    
+    // Check that column exists and is of correct type
+    if (!m_table->valid_column(column_key)) {
+        throw InvalidColumnKey("Invalid column key");
+    }
+    
+    if (!column_key.is_list()) {
+        throw InvalidArgument(ErrorCodes::TypeMismatch, "Vector search requires a List column");
+    }
+    
+    ColumnType col_type = column_key.get_type();
+    if (col_type != col_type_Double) {
+        std::string error_msg = "Vector search requires List<Double> column, got: ";
+        error_msg += get_data_type_name(DataType(col_type));
+        throw InvalidArgument(ErrorCodes::TypeMismatch, error_msg);
+    }
+    
+    // Check if column has HNSW index
+    if (!m_table->has_search_index(column_key)) {
+        throw LogicError(ErrorCodes::InvalidQuery,
+            "Vector search requires an HNSW index on the column. Call Table::add_hnsw_index() first.");
+    }
+    
+    // Get the HNSW index
+    auto& index_accessors = m_table->get_index_accessors();
+    size_t spec_ndx = m_table->leaf_ndx2spec_ndx(column_key.get_index());
+    
+    if (spec_ndx >= index_accessors.size() || !index_accessors[spec_ndx]) {
+        throw LogicError(ErrorCodes::InvalidQuery, "HNSW index not found for column");
+    }
+    
+    // Try to cast to HNSW index
+    HNSWIndex* hnsw_index = dynamic_cast<HNSWIndex*>(index_accessors[spec_ndx].get());
+    if (!hnsw_index) {
+        throw LogicError(ErrorCodes::InvalidQuery,
+            "Column has a search index but it is not an HNSW index. Use add_hnsw_index() instead of add_search_index().");
+    }
+    
+    // Initialize query state before checking conditions
+    init();
+    
+    // Perform the HNSW radius search
+    auto results = hnsw_index->search_radius(query_vector, max_distance);
+    
+    // Filter results through the existing query if there are any filter conditions
+    std::vector<std::pair<ObjKey, double>> filtered_results;
+    if (has_conditions()) {
+        // Apply query filters to the HNSW results
+        for (const auto& result : results) {
+            Obj obj = m_table->get_object(result.first);
+            if (eval_object(obj)) {
+                filtered_results.push_back(result);
+            }
+        }
+    } else {
+        filtered_results = std::move(results);
+    }
+    
+    // Create a TableView from the filtered results
+    Query result_query(m_table);
+    TableView tv(result_query, filtered_results.size());
+    
+    // Add each filtered result ObjKey to the TableView
+    for (const auto& result : filtered_results) {
+        tv.m_key_values.add(result.first);
+    }
+    
+    return tv;
 }

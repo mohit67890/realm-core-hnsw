@@ -30,6 +30,7 @@
 #include <realm/exceptions.hpp>
 #include <realm/impl/destroy_guard.hpp>
 #include <realm/index_string.hpp>
+#include <realm/index_hnsw.hpp>
 #include <realm/query_conditions_tpl.hpp>
 #include <realm/replication.hpp>
 #include <realm/table_view.hpp>
@@ -713,6 +714,16 @@ void Table::populate_search_index(ColKey col_key)
     SearchIndex* index = m_index_accessors[col_ndx].get();
     DataType type = get_column_type(col_key);
 
+    // HNSW index for List<Double> - handle separately
+    if (dynamic_cast<HNSWIndex*>(index) != nullptr) {
+        // HNSW index populates incrementally during insert operations
+        // Iterate through all objects and add them to the index
+        for (auto it = begin(); it != end(); ++it) {
+            index->insert(it->get_key(), Mixed{});
+        }
+        return;
+    }
+
     if (type == type_Int) {
         if (is_nullable(col_key)) {
             do_bulk_insert_index<Optional<int64_t>>(this, index, col_key, get_alloc());
@@ -798,6 +809,12 @@ void Table::update_indexes(ObjKey key, const FieldValues& values)
         if (auto&& index = m_index_accessors[column_ndx]) {
             // There is an index for this column
             auto col_key = m_leaf_ndx2colkey[column_ndx];
+            // HNSW indexes are for List<Double> collections - handle separately
+            if (dynamic_cast<HNSWIndex*>(index.get()) != nullptr) {
+                // HNSW index will be updated when the list is populated
+                // For now, just mark that there's an index present
+                continue;
+            }
             if (col_key.is_collection())
                 continue;
             auto type = col_key.get_type();
@@ -879,6 +896,32 @@ void Table::do_add_search_index(ColKey col_key, IndexType type)
     if (m_index_accessors[column_ndx] != nullptr)
         return;
 
+    // Handle HNSW index for List<Double>
+    if (type == IndexType::HNSW) {
+        if (!col_key.is_list() || col_key.get_type() != col_type_Double) {
+            throw IllegalOperation(util::format("HNSW index only supported for List<Double> columns: %1", 
+                                               get_column_name(col_key)));
+        }
+        
+        // m_index_accessors always has the same number of pointers as the number of columns. Columns without search
+        // index have 0-entries.
+        REALM_ASSERT(m_index_accessors.size() == m_leaf_ndx2colkey.size());
+        REALM_ASSERT(m_index_accessors[column_ndx] == nullptr);
+
+        // Create the HNSW index
+        m_index_accessors[column_ndx] =
+            std::make_unique<HNSWIndex>(ClusterColumn(&m_clusters, col_key, type), get_alloc()); // Throws
+        SearchIndex* index = m_index_accessors[column_ndx].get();
+        // Insert ref to index
+        index->set_parent(&m_index_refs, column_ndx);
+
+        m_index_refs.set(column_ndx, index->get_ref()); // Throws
+
+        populate_search_index(col_key);
+        return;
+    }
+
+    // Handle regular string/fulltext indexes
     if (!StringIndex::type_supported(DataType(col_key.get_type())) ||
         (col_key.is_collection() && !(col_key.is_list() && col_key.get_type() == col_type_String)) ||
         (type == IndexType::Fulltext && col_key.get_type() != col_type_String)) {
@@ -933,6 +976,20 @@ void Table::add_search_index(ColKey col_key, IndexType type)
             if (attr.test(col_attr_Indexed)) {
                 REALM_ASSERT(search_index_type(col_key) == IndexType::General);
                 return;
+            }
+            if (attr.test(col_attr_FullText_Indexed)) {
+                this->remove_search_index(col_key);
+            }
+            break;
+        case IndexType::HNSW:
+            // For HNSW, we use the regular indexed flag
+            if (attr.test(col_attr_Indexed)) {
+                // Check if it's already an HNSW index
+                if (search_index_type(col_key) == IndexType::HNSW) {
+                    return;
+                }
+                // Remove other index type
+                this->remove_search_index(col_key);
             }
             if (attr.test(col_attr_FullText_Indexed)) {
                 this->remove_search_index(col_key);
@@ -1273,7 +1330,17 @@ IndexType Table::search_index_type(ColKey col_key) const noexcept
     if (m_index_accessors[col_key.get_index().val].get()) {
         auto attr = m_spec.get_column_attr(m_leaf_ndx2spec_ndx[col_key.get_index().val]);
         bool fulltext = attr.test(col_attr_FullText_Indexed);
-        return fulltext ? IndexType::Fulltext : IndexType::General;
+        
+        if (fulltext) {
+            return IndexType::Fulltext;
+        }
+        
+        // Check if it's an HNSW index by type checking
+        if (dynamic_cast<HNSWIndex*>(m_index_accessors[col_key.get_index().val].get())) {
+            return IndexType::HNSW;
+        }
+        
+        return IndexType::General;
     }
     return IndexType::None;
 }
@@ -1699,6 +1766,12 @@ StringIndex* Table::get_string_index(ColKey col) const noexcept
     return dynamic_cast<StringIndex*>(m_index_accessors[col.get_index().val].get());
 }
 
+HNSWIndex* Table::get_hnsw_index(ColKey col) const noexcept
+{
+    check_column(col);
+    return dynamic_cast<HNSWIndex*>(m_index_accessors[col.get_index().val].get());
+}
+
 template <class T>
 ObjKey Table::find_first(ColKey col_key, T value) const
 {
@@ -2073,11 +2146,30 @@ bool Table::operator==(const Table& t) const
 
 void Table::flush_for_commit()
 {
+    // Update all HNSW indexes with any objects that were created/modified
+    update_all_hnsw_indexes();
+    
     if (m_top.is_attached() && m_top.size() >= top_position_for_version) {
         if (!m_top.is_read_only()) {
             ++m_in_file_version_at_transaction_boundary;
             auto rot_version = RefOrTagged::make_tagged(m_in_file_version_at_transaction_boundary);
             m_top.set(top_position_for_version, rot_version);
+        }
+    }
+}
+
+void Table::update_all_hnsw_indexes()
+{
+    // Iterate through all indexes and update HNSW ones
+    for (size_t col_ndx = 0; col_ndx < m_index_accessors.size(); ++col_ndx) {
+        if (auto* hnsw = dynamic_cast<HNSWIndex*>(m_index_accessors[col_ndx].get())) {
+            // Clear the index first to avoid duplicates
+            hnsw->clear();
+            
+            // Re-index all objects
+            for (auto it = begin(); it != end(); ++it) {
+                hnsw->insert(it->get_key(), Mixed{});
+            }
         }
     }
 }
@@ -2168,8 +2260,15 @@ void Table::refresh_index_accessors()
                 m_index_accessors[col_ndx]->refresh_accessor_tree(virtual_col);
             }
             else { // new index!
-                m_index_accessors[col_ndx] =
-                    std::make_unique<StringIndex>(ref, &m_index_refs, col_ndx, virtual_col, get_alloc());
+                // Check if it's an HNSW index (List<Double>)
+                if (col_key.is_list() && col_key.get_type() == col_type_Double) {
+                    m_index_accessors[col_ndx] =
+                        std::make_unique<HNSWIndex>(ref, &m_index_refs, col_ndx, virtual_col, get_alloc());
+                }
+                else {
+                    m_index_accessors[col_ndx] =
+                        std::make_unique<StringIndex>(ref, &m_index_refs, col_ndx, virtual_col, get_alloc());
+                }
             }
         }
     }

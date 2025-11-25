@@ -120,6 +120,10 @@ bson_strerror_r (int err_code,                    /* IN */
    // AIX does not provide strerror_l, and its strerror_r isn't glibc's.
    // But it does provide a glibc compatible one called __linux_strerror_r
    ret = __linux_strerror_r (err_code, buf, buflen);
+#elif defined(__ANDROID__)
+   // Android does not provide strerror_l. Use the POSIX strerror_r instead.
+   (void) strerror_r (err_code, buf, buflen);
+   ret = buf;
 #elif defined(__APPLE__)
    // Apple does not provide `strerror_l`, but it does unconditionally provide
    // the XSI-compliant `strerror_r`, but only when compiling with Apple Clang.

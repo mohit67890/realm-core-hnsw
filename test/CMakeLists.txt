@@ -60,6 +60,12 @@ set(CORE_TEST_SOURCES
     test_file_locks.cpp
     test_global_key.cpp
     test_group.cpp
+    test_hnsw_integration.cpp
+    test_hnsw_vector_search.cpp
+    test_hnsw_comprehensive.cpp
+    test_hnsw_realworld.cpp
+    test_hnsw_json_loader.cpp
+    test_hnsw_dimension_validation.cpp
     test_impl_simulated_failure.cpp
     test_index_string.cpp
     test_json.cpp
