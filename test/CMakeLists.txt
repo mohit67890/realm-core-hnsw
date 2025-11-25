@@ -60,6 +60,7 @@ set(CORE_TEST_SOURCES
     test_file_locks.cpp
     test_global_key.cpp
     test_group.cpp
+    test_hnsw_simple.cpp
     test_hnsw_integration.cpp
     test_hnsw_vector_search.cpp
     test_hnsw_comprehensive.cpp

@@ -246,7 +246,8 @@ public:
     void add_search_index(ColKey col_key, IndexType type = IndexType::General);
     void add_fulltext_index(ColKey col_key)
     {
-        add_search_index(col_key, IndexType::HNSW);
+        // Correct enumeration: Fulltext indexes must use IndexType::Fulltext
+        add_search_index(col_key, IndexType::Fulltext);
     }
     void add_hnsw_index(ColKey col_key)
     {

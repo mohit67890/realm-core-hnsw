@@ -23,6 +23,8 @@
 #include <algorithm>
 #include <unordered_set>
 #include <iostream>
+#include <shared_mutex>
+#include <chrono>
 
 namespace realm {
 
@@ -38,6 +40,13 @@ HNSWIndex::HNSWIndex(const ClusterColumn& target_column, Allocator& alloc, const
 {
     m_array->create(Array::type_HasRefs);
     m_root_array = m_array.get();
+    // Normalize configuration defaults
+    if (m_config.M0 == 0) {
+        m_config.M0 = m_config.M * 2; // typical heuristic
+    }
+    if (m_config.ef_search == 0) {
+        m_config.ef_search = std::max<size_t>(64, m_config.M * 8);
+    }
 }
 
 HNSWIndex::HNSWIndex(ref_type ref, ArrayParent* parent, size_t ndx_in_parent,
@@ -53,6 +62,12 @@ HNSWIndex::HNSWIndex(ref_type ref, ArrayParent* parent, size_t ndx_in_parent,
     m_array->set_parent(parent, ndx_in_parent);
     m_root_array = m_array.get();
     load_from_storage();
+    if (m_config.M0 == 0) {
+        m_config.M0 = m_config.M * 2;
+    }
+    if (m_config.ef_search == 0) {
+        m_config.ef_search = std::max<size_t>(64, m_config.M * 8);
+    }
 }
 
 HNSWIndex::~HNSWIndex() = default;
@@ -167,7 +182,10 @@ int HNSWIndex::select_layer()
     // Select layer with exponential decay probability
     std::uniform_real_distribution<double> uniform(0.0, 1.0);
     double r = uniform(m_rng);
-    return static_cast<int>(-log(r) * m_config.ml);
+    int layer = static_cast<int>(-log(r) * m_config.ml);
+    constexpr int k_max_layer_cap = 32;
+    if (layer > k_max_layer_cap) layer = k_max_layer_cap;
+    return layer;
 }
 
 // ===================== Search Layer Algorithm =====================
@@ -203,7 +221,9 @@ std::vector<std::pair<ObjKey, double>> HNSWIndex::search_layer_with_distances(
         candidates.pop();
         
         // If current distance is worse than worst in result set, stop
-        if (current.distance > w.top().distance) {
+        if (current.distance > w.top().distance && w.size() >= ef) {
+            // We have gathered at least ef candidates and the best remaining candidate
+            // is worse than the worst accepted -> terminate per HNSW logic
             break;
         }
         
@@ -451,6 +471,8 @@ void HNSWIndex::prune_connections(ObjKey node_key, int layer)
 
 void HNSWIndex::insert(ObjKey key, const Mixed& value)
 {
+    std::unique_lock lock(m_mutex);
+    auto t0 = std::chrono::high_resolution_clock::now();
     // Extract vector from the list column
     std::vector<double> vector = get_vector_for_key(key);
     
@@ -492,15 +514,19 @@ void HNSWIndex::insert(ObjKey key, const Mixed& value)
     }
     
     // Insert node and connect at each layer from node_layer down to 0
+    // Add node to index once before establishing connections
+    m_vectors[key.value] = new_node;
     for (int lc = node_layer; lc >= 0; --lc) {
         size_t ef = m_config.ef_construction;
         auto candidates_with_dist = search_layer_with_distances(new_node.vector, curr_nearest, ef, lc);
         
         size_t M = (lc == 0) ? m_config.M0 : m_config.M;
-        std::vector<ObjKey> neighbors = select_neighbors_simple(new_node.vector, candidates_with_dist, M);
-        
-        // Add node to index before connecting
-        m_vectors[key.value] = new_node;
+        std::vector<ObjKey> neighbors;
+        if (lc == 0) {
+            neighbors = select_neighbors_simple(new_node.vector, candidates_with_dist, M);
+        } else {
+            neighbors = select_neighbors_heuristic(new_node.vector, candidates_with_dist, M, lc, true);
+        }
         
         // Connect new node to neighbors
         for (ObjKey neighbor : neighbors) {
@@ -525,12 +551,16 @@ void HNSWIndex::insert(ObjKey key, const Mixed& value)
     
     // Persist changes to storage
     save_to_storage();
+    auto t1 = std::chrono::high_resolution_clock::now();
+    m_metrics.insert_count.fetch_add(1);
+    m_metrics.total_insert_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
 }
 
 // ===================== Other SearchIndex Operations =====================
 
 void HNSWIndex::set(ObjKey key, const Mixed& value)
 {
+    // Note: erase() and insert() each handle their own locking
     // Remove old entry if exists
     erase(key);
     // Insert new entry (insert will call save_to_storage)
@@ -539,6 +569,7 @@ void HNSWIndex::set(ObjKey key, const Mixed& value)
 
 void HNSWIndex::erase(ObjKey key)
 {
+    std::unique_lock lock(m_mutex);
     auto it = m_vectors.find(key.value);
     if (it == m_vectors.end()) {
         return;
@@ -603,11 +634,13 @@ FindRes HNSWIndex::find_all_no_copy(Mixed value, InternalFindResult& result) con
 
 size_t HNSWIndex::count(const Mixed& /*value*/) const
 {
+    std::shared_lock lock(m_mutex);
     return m_vectors.size();
 }
 
 void HNSWIndex::clear()
 {
+    std::unique_lock lock(m_mutex);
     m_vectors.clear();
     m_entry_point = ObjKey();
     m_entry_point_layer = -1;
@@ -618,12 +651,14 @@ void HNSWIndex::clear()
 
 bool HNSWIndex::is_empty() const
 {
+    std::shared_lock lock(m_mutex);
     return m_vectors.empty();
 }
 
 void HNSWIndex::insert_bulk(const ArrayUnsigned* keys, uint64_t key_offset, 
                             size_t num_values, ArrayPayload& values)
 {
+    std::unique_lock lock(m_mutex);
     // Bulk insertion: insert all values individually
     // Future optimization: batch neighbor search and connection
     for (size_t i = 0; i < num_values; ++i) {
@@ -636,6 +671,7 @@ void HNSWIndex::insert_bulk(const ArrayUnsigned* keys, uint64_t key_offset,
 void HNSWIndex::insert_bulk_list(const ArrayUnsigned* keys, uint64_t key_offset,
                                  size_t num_values, ArrayInteger& ref_array)
 {
+    std::unique_lock lock(m_mutex);
     // Bulk list insertion: insert all vectors individually
     // Each entry in ref_array points to a list of doubles
     for (size_t i = 0; i < num_values; ++i) {
@@ -650,7 +686,15 @@ void HNSWIndex::insert_bulk_list(const ArrayUnsigned* keys, uint64_t key_offset,
 std::vector<std::pair<ObjKey, double>> HNSWIndex::search_knn(const std::vector<double>& query_vector,
                                                                size_t k, size_t ef_search) const
 {
+    std::shared_lock lock(m_mutex);
+    auto t0 = std::chrono::high_resolution_clock::now();
     if (m_vectors.empty() || !m_entry_point) {
+        auto t1 = std::chrono::high_resolution_clock::now();
+        m_metrics.search_count.fetch_add(1);
+        m_metrics.total_search_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+        return {};
+    }
+    if (k == 0) {
         return {};
     }
     
@@ -659,6 +703,9 @@ std::vector<std::pair<ObjKey, double>> HNSWIndex::search_knn(const std::vector<d
     if (ef_search == 0) {
         ef_search = std::max(m_config.ef_search, k);
     }
+    // Clamp ef_search to number of vectors to avoid unnecessary work
+    ef_search = std::min<size_t>(ef_search, m_vectors.size());
+    k = std::min<size_t>(k, m_vectors.size());
     
     // Start from top layer and traverse down
     ObjKey curr_nearest = m_entry_point;
@@ -677,20 +724,32 @@ std::vector<std::pair<ObjKey, double>> HNSWIndex::search_knn(const std::vector<d
         results.resize(k);
     }
     
+    auto t1 = std::chrono::high_resolution_clock::now();
+    m_metrics.search_count.fetch_add(1);
+    m_metrics.total_search_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
     return results;
 }
 
 std::vector<std::pair<ObjKey, double>> HNSWIndex::search_radius(const std::vector<double>& query_vector,
                                                                   double max_distance) const
 {
+    std::shared_lock lock(m_mutex);
+    auto t0 = std::chrono::high_resolution_clock::now();
     if (m_vectors.empty() || !m_entry_point) {
+        auto t1 = std::chrono::high_resolution_clock::now();
+        m_metrics.radius_search_count.fetch_add(1);
+        m_metrics.total_radius_search_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+        return {};
+    }
+    if (max_distance < 0) {
         return {};
     }
     
     validate_vector_dimension(query_vector);
     
     // Search with large ef to get many candidates
-    auto results = search_knn(query_vector, m_vectors.size(), m_config.ef_search * 2);
+    size_t ef_large = std::min<size_t>(m_config.ef_search * 2, std::max<size_t>(m_config.ef_search, m_vectors.size()));
+    auto results = search_knn(query_vector, m_vectors.size(), ef_large);
     
     // Filter by distance threshold
     std::vector<std::pair<ObjKey, double>> filtered;
@@ -702,6 +761,9 @@ std::vector<std::pair<ObjKey, double>> HNSWIndex::search_radius(const std::vecto
         }
     }
     
+    auto t1 = std::chrono::high_resolution_clock::now();
+    m_metrics.radius_search_count.fetch_add(1);
+    m_metrics.total_radius_search_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
     return filtered;
 }
 
@@ -709,6 +771,7 @@ std::vector<std::pair<ObjKey, double>> HNSWIndex::search_radius(const std::vecto
 
 void HNSWIndex::load_from_storage()
 {
+    std::unique_lock lock(m_mutex);
     // Array structure:
     // [0] = metadata array ref
     // [1..N] = node array refs (one per node)
@@ -723,14 +786,15 @@ void HNSWIndex::load_from_storage()
         if (metadata_ref) {
             Array metadata(m_array->get_alloc());
             metadata.init_from_ref(metadata_ref);
-            
-            if (metadata.size() >= 6) {
-                m_entry_point = ObjKey(metadata.get(0));
-                m_entry_point_layer = static_cast<int>(metadata.get(1));
-                m_config.vector_dimension = static_cast<size_t>(metadata.get(2));
-                m_config.M = static_cast<size_t>(metadata.get(3));
-                m_config.ef_construction = static_cast<size_t>(metadata.get(4));
-                m_config.ef_search = static_cast<size_t>(metadata.get(5));
+            if (metadata.size() >= 7) {
+                uint64_t version = metadata.get(0);
+                REALM_ASSERT(version == k_format_version); // For now enforce match
+                m_entry_point = ObjKey(metadata.get(1));
+                m_entry_point_layer = static_cast<int>(metadata.get(2));
+                m_config.vector_dimension = static_cast<size_t>(metadata.get(3));
+                m_config.M = static_cast<size_t>(metadata.get(4));
+                m_config.ef_construction = static_cast<size_t>(metadata.get(5));
+                m_config.ef_search = static_cast<size_t>(metadata.get(6));
             }
         }
     }
@@ -793,43 +857,45 @@ void HNSWIndex::load_from_storage()
 
 void HNSWIndex::save_to_storage()
 {
-    // Clear existing data and recreate with HasRefs type
-    m_array->destroy();
-    m_array->create(Array::type_HasRefs);
-    
-    // Update parent with new ref after destroy/create
+    // Note: Caller must hold m_mutex lock (unique_lock)
+    Allocator& alloc = m_array->get_alloc();
+    // Build new root array off to the side for atomic-like swap
+    auto new_root = std::make_unique<Array>(alloc);
+    new_root->create(Array::type_HasRefs);
+
+    // Preserve parent linkage info if present
+    ArrayParent* parent = nullptr;
+    size_t parent_ndx = 0;
     if (m_array->has_parent()) {
-        m_array->update_parent();
+        parent = m_array->get_parent();
+        parent_ndx = m_array->get_ndx_in_parent();
     }
-    
-    // Save metadata
-    Array metadata(m_array->get_alloc());
+
+    // Metadata
+    Array metadata(alloc);
     metadata.create(Array::type_Normal);
+    metadata.add(k_format_version);
     metadata.add(m_entry_point.value);
     metadata.add(m_entry_point_layer);
     metadata.add(m_config.vector_dimension);
     metadata.add(m_config.M);
     metadata.add(m_config.ef_construction);
     metadata.add(m_config.ef_search);
-    
-    m_array->add(metadata.get_ref());
-    
-    // Save each node
+    new_root->add(metadata.get_ref());
+
+    // Nodes
     for (const auto& pair : m_vectors) {
         const Node& node = pair.second;
-        
-        Array node_array(m_array->get_alloc());
+        Array node_array(alloc);
         node_array.create(Array::type_HasRefs);
-        
-        // Store basic node info (obj_key, layer) as int array ref
-        Array node_info(m_array->get_alloc());
+
+        Array node_info(alloc);
         node_info.create(Array::type_Normal);
         node_info.add(node.obj_key.value);
         node_info.add(node.layer);
         node_array.add(node_info.get_ref());
-        
-        // Store vector data (doubles as int64_t bit patterns)
-        Array vector_array(m_array->get_alloc());
+
+        Array vector_array(alloc);
         vector_array.create(Array::type_Normal);
         for (double val : node.vector) {
             int64_t bits;
@@ -837,22 +903,46 @@ void HNSWIndex::save_to_storage()
             vector_array.add(bits);
         }
         node_array.add(vector_array.get_ref());
-        
-        // Store connections for each layer
+
         for (int layer = 0; layer <= node.layer; ++layer) {
-            Array conn_array(m_array->get_alloc());
+            Array conn_array(alloc);
             conn_array.create(Array::type_Normal);
-            
             if (layer < static_cast<int>(node.connections.size())) {
                 for (ObjKey neighbor : node.connections[layer]) {
                     conn_array.add(neighbor.value);
                 }
             }
-            
             node_array.add(conn_array.get_ref());
         }
-        
-        m_array->add(node_array.get_ref());
+        new_root->add(node_array.get_ref());
+    }
+
+    // Swap in new array
+    m_array->destroy();
+    m_array = std::move(new_root);
+    m_root_array = m_array.get();
+    if (parent) {
+        m_array->set_parent(parent, parent_ndx);
+        m_array->update_parent();
+    }
+}
+
+void HNSWIndex::rebuild()
+{
+    std::unique_lock lock(m_mutex);
+    // Collect existing nodes' vectors
+    std::vector<Node> nodes;
+    nodes.reserve(m_vectors.size());
+    for (auto &p : m_vectors) {
+        nodes.push_back(p.second);
+    }
+    m_vectors.clear();
+    m_entry_point = ObjKey();
+    m_entry_point_layer = -1;
+    // Reinsert
+    for (const auto &n : nodes) {
+        // Reuse stored vector
+        insert(n.obj_key, Mixed());
     }
 }
 
@@ -861,6 +951,7 @@ void HNSWIndex::save_to_storage()
 void HNSWIndex::verify() const
 {
     // Verify graph integrity
+    std::shared_lock lock(m_mutex);
     for (const auto& pair : m_vectors) {
         const Node& node = pair.second;
         
@@ -877,6 +968,11 @@ void HNSWIndex::verify() const
                     }
                 }
             }
+        }
+        // Degree constraints
+        for (int layer = 0; layer <= node.layer && layer < static_cast<int>(node.connections.size()); ++layer) {
+            size_t max_conn = (layer == 0) ? m_config.M0 : m_config.M;
+            REALM_ASSERT_EX(node.connections[layer].size() <= max_conn + 2, node.obj_key.value, layer); // small slack
         }
     }
 }

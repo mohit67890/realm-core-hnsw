@@ -29,6 +29,8 @@
 #include <random>
 #include <cmath>
 #include <limits>
+#include <shared_mutex>
+#include <atomic>
 
 namespace realm {
 
@@ -102,6 +104,9 @@ public:
     // Configuration
     const Config& get_config() const { return m_config; }
     void set_ef_search(size_t ef_search) { m_config.ef_search = ef_search; }
+    ObjKey get_entry_point() const { return m_entry_point; }
+    // Rebuild the graph (simple brute force reinsertion). Expensive; use sparingly.
+    void rebuild();
     
     // Statistics
     size_t get_num_vectors() const { return m_vectors.size(); }
@@ -138,6 +143,36 @@ private:
     ObjKey m_entry_point;                                     // Entry point for search (highest layer node)
     int m_entry_point_layer;                                  // Layer of entry point
     mutable std::mt19937_64 m_rng;                           // Random number generator
+    mutable std::shared_mutex m_mutex;                       // Concurrency control (read: shared, write: unique)
+    static constexpr uint64_t k_format_version = 1;          // Persistence format version
+
+    // Metrics counters
+    struct Metrics {
+        std::atomic<uint64_t> insert_count{0};
+        std::atomic<uint64_t> erase_count{0};
+        std::atomic<uint64_t> search_count{0};
+        std::atomic<uint64_t> radius_search_count{0};
+        std::atomic<uint64_t> total_insert_ns{0};
+        std::atomic<uint64_t> total_search_ns{0};
+        std::atomic<uint64_t> total_radius_search_ns{0};
+    } mutable m_metrics;
+
+public: // metrics accessors
+    uint64_t get_insert_count() const { return m_metrics.insert_count.load(); }
+    uint64_t get_search_count() const { return m_metrics.search_count.load(); }
+    uint64_t get_radius_search_count() const { return m_metrics.radius_search_count.load(); }
+    double get_avg_insert_ms() const {
+        uint64_t c = m_metrics.insert_count.load();
+        return c ? (m_metrics.total_insert_ns.load() / 1e6) / c : 0.0;
+    }
+    double get_avg_search_ms() const {
+        uint64_t c = m_metrics.search_count.load();
+        return c ? (m_metrics.total_search_ns.load() / 1e6) / c : 0.0;
+    }
+    double get_avg_radius_search_ms() const {
+        uint64_t c = m_metrics.radius_search_count.load();
+        return c ? (m_metrics.total_radius_search_ns.load() / 1e6) / c : 0.0;
+    }
 
     // Distance computation
     double compute_distance(const std::vector<double>& v1, const std::vector<double>& v2) const;

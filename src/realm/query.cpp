@@ -2095,14 +2095,14 @@ TableView Query::vector_search_knn(ColKey column_key, const std::vector<double>&
     
     // Get the HNSW index
     auto& index_accessors = m_table->get_index_accessors();
-    size_t spec_ndx = m_table->leaf_ndx2spec_ndx(column_key.get_index());
+    size_t column_ndx = column_key.get_index().val;
     
-    if (spec_ndx >= index_accessors.size() || !index_accessors[spec_ndx]) {
+    if (column_ndx >= index_accessors.size() || !index_accessors[column_ndx]) {
         throw LogicError(ErrorCodes::InvalidQuery, "HNSW index not found for column");
     }
     
     // Try to cast to HNSW index
-    HNSWIndex* hnsw_index = dynamic_cast<HNSWIndex*>(index_accessors[spec_ndx].get());
+    HNSWIndex* hnsw_index = dynamic_cast<HNSWIndex*>(index_accessors[column_ndx].get());
     if (!hnsw_index) {
         throw LogicError(ErrorCodes::InvalidQuery, 
             "Column has a search index but it is not an HNSW index. Use add_hnsw_index() instead of add_search_index().");
@@ -2186,14 +2186,14 @@ TableView Query::vector_search_radius(ColKey column_key, const std::vector<doubl
     
     // Get the HNSW index
     auto& index_accessors = m_table->get_index_accessors();
-    size_t spec_ndx = m_table->leaf_ndx2spec_ndx(column_key.get_index());
+    size_t column_ndx = column_key.get_index().val;
     
-    if (spec_ndx >= index_accessors.size() || !index_accessors[spec_ndx]) {
+    if (column_ndx >= index_accessors.size() || !index_accessors[column_ndx]) {
         throw LogicError(ErrorCodes::InvalidQuery, "HNSW index not found for column");
     }
     
     // Try to cast to HNSW index
-    HNSWIndex* hnsw_index = dynamic_cast<HNSWIndex*>(index_accessors[spec_ndx].get());
+    HNSWIndex* hnsw_index = dynamic_cast<HNSWIndex*>(index_accessors[column_ndx].get());
     if (!hnsw_index) {
         throw LogicError(ErrorCodes::InvalidQuery,
             "Column has a search index but it is not an HNSW index. Use add_hnsw_index() instead of add_search_index().");
