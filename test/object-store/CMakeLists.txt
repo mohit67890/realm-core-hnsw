@@ -32,6 +32,7 @@ set(SOURCES
     c_api/c_api.cpp
     c_api/c_api_file_tests.c
     test_c_api_hnsw.cpp
+    test_c_api_hnsw_comprehensive.cpp
 
     util/event_loop.cpp
     util/test_file.cpp
