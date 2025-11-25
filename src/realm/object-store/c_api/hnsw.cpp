@@ -51,27 +51,23 @@ RLM_API bool realm_hnsw_search_knn(const realm_t* realm,
                                    realm_hnsw_search_result_t* out_results,
                                    size_t* out_num_results)
 {
-    return wrap_err([&]() {
+    return realm::c_api::wrap_err([&]() {
         auto& shared_realm = *realm;
-        auto table = shared_realm.read_group().get_table(TableKey(class_key));
+        auto table = (*shared_realm).read_group().get_table(realm::TableKey(class_key));
         if (!table) {
             throw std::runtime_error("Table not found");
         }
 
-        ColKey col_key(property_key);
-        auto col = table->get_column_key(col_key);
-        if (!col) {
-            throw std::runtime_error("Column not found");
-        }
-
+        realm::ColKey col_key(property_key);
+        
         // Get the search index for this column
-        auto search_index = table->get_search_index(col);
+        auto search_index = table->get_search_index(col_key);
         if (!search_index) {
             throw std::runtime_error("No HNSW index found on this property");
         }
 
         // Cast to HNSWIndex
-        auto* hnsw_index = dynamic_cast<HNSWIndex*>(search_index.get());
+        auto* hnsw_index = dynamic_cast<realm::HNSWIndex*>(search_index);
         if (!hnsw_index) {
             throw std::runtime_error("Property does not have an HNSW index");
         }
@@ -107,27 +103,23 @@ RLM_API bool realm_hnsw_search_radius(const realm_t* realm,
                                       size_t max_results,
                                       size_t* out_num_results)
 {
-    return wrap_err([&]() {
+    return realm::c_api::wrap_err([&]() {
         auto& shared_realm = *realm;
-        auto table = shared_realm.read_group().get_table(TableKey(class_key));
+        auto table = (*shared_realm).read_group().get_table(realm::TableKey(class_key));
         if (!table) {
             throw std::runtime_error("Table not found");
         }
 
-        ColKey col_key(property_key);
-        auto col = table->get_column_key(col_key);
-        if (!col) {
-            throw std::runtime_error("Column not found");
-        }
-
+        realm::ColKey col_key(property_key);
+        
         // Get the search index for this column
-        auto search_index = table->get_search_index(col);
+        auto search_index = table->get_search_index(col_key);
         if (!search_index) {
             throw std::runtime_error("No HNSW index found on this property");
         }
 
         // Cast to HNSWIndex
-        auto* hnsw_index = dynamic_cast<HNSWIndex*>(search_index.get());
+        auto* hnsw_index = dynamic_cast<realm::HNSWIndex*>(search_index);
         if (!hnsw_index) {
             throw std::runtime_error("Property does not have an HNSW index");
         }
@@ -160,26 +152,22 @@ RLM_API bool realm_hnsw_create_index(realm_t* realm,
                                      size_t ef_construction,
                                      realm_hnsw_distance_metric_e metric)
 {
-    return wrap_err([&]() {
+    return realm::c_api::wrap_err([&]() {
+        // Note: M, ef_construction, and metric parameters are currently unused.
+        // The HNSW index uses default configuration from HNSWIndex::Config.
+        // TODO: Extend Table API to accept custom HNSW config if needed.
+        (void)M;
+        (void)ef_construction;
+        (void)metric;
+        
         auto& shared_realm = *realm;
-        auto table = shared_realm.read_group().get_table(TableKey(class_key));
+        auto table = (*shared_realm).read_group().get_table(realm::TableKey(class_key));
         if (!table) {
             throw std::runtime_error("Table not found");
         }
 
-        ColKey col_key(property_key);
-        
-        // Create HNSW configuration
-        HNSWIndex::Config config;
-        config.M = M > 0 ? M : 16;
-        config.M0 = config.M * 2;
-        config.ef_construction = ef_construction > 0 ? ef_construction : 200;
-        config.metric = realm::c_api::to_cpp_metric(metric);
-
-        // Create the HNSW index
-        table->add_search_index(col_key, IndexType::General, [&](const ClusterColumn& column, Allocator& alloc) {
-            return std::make_unique<HNSWIndex>(column, alloc, config);
-        });
+        realm::ColKey col_key(property_key);
+        table->add_search_index(col_key, realm::IndexType::HNSW);
 
         return true;
     });
@@ -189,14 +177,14 @@ RLM_API bool realm_hnsw_remove_index(realm_t* realm,
                                      realm_class_key_t class_key,
                                      realm_property_key_t property_key)
 {
-    return wrap_err([&]() {
+    return realm::c_api::wrap_err([&]() {
         auto& shared_realm = *realm;
-        auto table = shared_realm.read_group().get_table(TableKey(class_key));
+        auto table = (*shared_realm).read_group().get_table(realm::TableKey(class_key));
         if (!table) {
             throw std::runtime_error("Table not found");
         }
 
-        ColKey col_key(property_key);
+        realm::ColKey col_key(property_key);
         table->remove_search_index(col_key);
 
         return true;
@@ -208,19 +196,19 @@ RLM_API bool realm_hnsw_has_index(const realm_t* realm,
                                   realm_property_key_t property_key,
                                   bool* out_has_index)
 {
-    return wrap_err([&]() {
+    return realm::c_api::wrap_err([&]() {
         auto& shared_realm = *realm;
-        auto table = shared_realm.read_group().get_table(TableKey(class_key));
+        auto table = (*shared_realm).read_group().get_table(realm::TableKey(class_key));
         if (!table) {
             throw std::runtime_error("Table not found");
         }
 
-        ColKey col_key(property_key);
+        realm::ColKey col_key(property_key);
         auto search_index = table->get_search_index(col_key);
         
         bool has_hnsw = false;
         if (search_index) {
-            auto* hnsw_index = dynamic_cast<HNSWIndex*>(search_index.get());
+            auto* hnsw_index = dynamic_cast<realm::HNSWIndex*>(search_index);
             has_hnsw = (hnsw_index != nullptr);
         }
 
@@ -238,21 +226,21 @@ RLM_API bool realm_hnsw_get_stats(const realm_t* realm,
                                   size_t* out_num_vectors,
                                   int* out_max_layer)
 {
-    return wrap_err([&]() {
+    return realm::c_api::wrap_err([&]() {
         auto& shared_realm = *realm;
-        auto table = shared_realm.read_group().get_table(TableKey(class_key));
+        auto table = (*shared_realm).read_group().get_table(realm::TableKey(class_key));
         if (!table) {
             throw std::runtime_error("Table not found");
         }
 
-        ColKey col_key(property_key);
+        realm::ColKey col_key(property_key);
         auto search_index = table->get_search_index(col_key);
         if (!search_index) {
             throw std::runtime_error("No HNSW index found on this property");
         }
 
         // Cast to HNSWIndex
-        auto* hnsw_index = dynamic_cast<HNSWIndex*>(search_index.get());
+        auto* hnsw_index = dynamic_cast<realm::HNSWIndex*>(search_index);
         if (!hnsw_index) {
             throw std::runtime_error("Property does not have an HNSW index");
         }
